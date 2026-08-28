@@ -1,0 +1,11 @@
+C:\Users\asher\AppData\Local\Temp\opencode\memos-autotagger\target\release\deps\tower_layer-c4ebd0cc70747b24.d: C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\lib.rs C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\identity.rs C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\layer_fn.rs C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\stack.rs C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\tuple.rs
+
+C:\Users\asher\AppData\Local\Temp\opencode\memos-autotagger\target\release\deps\libtower_layer-c4ebd0cc70747b24.rlib: C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\lib.rs C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\identity.rs C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\layer_fn.rs C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\stack.rs C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\tuple.rs
+
+C:\Users\asher\AppData\Local\Temp\opencode\memos-autotagger\target\release\deps\libtower_layer-c4ebd0cc70747b24.rmeta: C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\lib.rs C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\identity.rs C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\layer_fn.rs C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\stack.rs C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\tuple.rs
+
+C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\lib.rs:
+C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\identity.rs:
+C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\layer_fn.rs:
+C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\stack.rs:
+C:\Users\asher\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\tower-layer-0.3.3\src\tuple.rs:
