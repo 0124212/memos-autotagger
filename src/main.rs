@@ -129,9 +129,14 @@ impl Autotagger {
     async fn process_once(&self) -> Result<()> {
         let mut page_token = None;
         let mut total_tagged = 0;
+        let mut total_scanned = 0;
 
+        // Only fetch memos from the last hour to reduce API load
         loop {
-            let mut url = format!("{}/api/v1/memos?pageSize=100", self.base_url);
+            let mut url = format!(
+                "{}/api/v1/memos?pageSize=50&filter=created_ts>now-duration(\"1h\")",
+                self.base_url
+            );
             if let Some(token) = &page_token {
                 url.push_str(&format!("&page_token={}", token));
             }
@@ -154,6 +159,14 @@ impl Autotagger {
 
             for memo in resp.memos {
                 if memo.content.trim().is_empty() {
+                    continue;
+                }
+
+                total_scanned += 1;
+
+                // Skip memos that already have content tags (not just inbox)
+                let has_content_tag = memo.tags.iter().any(|t| t != "inbox");
+                if has_content_tag {
                     continue;
                 }
 
@@ -190,7 +203,7 @@ impl Autotagger {
         }
 
         if total_tagged > 0 {
-            info!("tagged {} memos this run", total_tagged);
+            info!("tagged {} memos (scanned {} recent)", total_tagged, total_scanned);
         }
         Ok(())
     }
