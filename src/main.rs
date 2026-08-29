@@ -47,6 +47,10 @@ struct Autotagger {
     re_image: Regex,
     re_audio: Regex,
     re_video: Regex,
+    re_code: Regex,
+    re_task: Regex,
+    re_quote: Regex,
+    re_bookmark: Regex,
 }
 
 impl Autotagger {
@@ -54,6 +58,10 @@ impl Autotagger {
         let re_image = Regex::new(r"!\[[^\]]*\]\([^)]+\)").unwrap();
         let re_audio = Regex::new(r"(?i)\.(mp3|wav|ogg|m4a|flac|aac|wma|opus)(\s|$|\))").unwrap();
         let re_video = Regex::new(r"(?i)\.(mp4|mkv|webm|avi|mov|flv|m4v|3gp|ogv)(\s|$|\))").unwrap();
+        let re_code = Regex::new(r"```(rust|python|js|ts|go|bash|sh|sql|yaml|json|toml)").unwrap();
+        let re_task = Regex::new(r"^- \[[ x]\]").unwrap();
+        let re_quote = Regex::new(r"^>").unwrap();
+        let re_bookmark = Regex::new(r"^\[.*\]\(https?://\)").unwrap();
 
         Self {
             client: Client::new(),
@@ -64,6 +72,10 @@ impl Autotagger {
             re_image,
             re_audio,
             re_video,
+            re_code,
+            re_task,
+            re_quote,
+            re_bookmark,
         }
     }
 
@@ -78,6 +90,18 @@ impl Autotagger {
         }
         if self.re_video.is_match(content) {
             tags.push("video".to_string());
+        }
+        if self.re_code.is_match(content) {
+            tags.push("code".to_string());
+        }
+        if self.re_task.is_match(content) {
+            tags.push("task".to_string());
+        }
+        if self.re_quote.is_match(content) {
+            tags.push("quote".to_string());
+        }
+        if self.re_bookmark.is_match(content) {
+            tags.push("bookmark".to_string());
         }
 
         if tags.is_empty() {
