@@ -1,5 +1,7 @@
 # memos-autotagger
 
+[![Rust](https://img.shields.io/badge/rust-%23000.svg?style=flat-square&logo=rust&logoColor=white)](#) [![Memos](https://img.shields.io/badge/memos-autotag-38bdf8.svg?style=flat-square)](#) [![Docker](https://img.shields.io/badge/docker-ready-2496ED.svg?style=flat-square&logo=docker&logoColor=white)](#) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](./LICENSE)
+
 Rust daemon that auto-tags your [Memos](https://github.com/usememos/memos) notes by content. Runs on an interval, scans `content` + existing `tags`, and patches missing tags via the Memos API.
 
 ## Tag rules (regex)
