@@ -1,0 +1,11 @@
+<svg width="1280" height="640" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1280" height="640" fill="#fffbeb"/>
+  <rect x="0" y="0" width="1280" height="12" fill="#eab308"/>
+  <text x="64" y="80" fill="#eab308" font-family="Space Mono, monospace" font-size="14" font-weight="700">RUST • REGEX • MEMOS • DOCKER</text>
+  <text x="64" y="180" fill="#1a1a1f" font-family="Inter, sans-serif" font-size="68" font-weight="800">memos-autotagger</text>
+  <text x="64" y="280" fill="#6e6b62" font-family="Inter, sans-serif" font-size="28">Auto-tags Memos by content.</text>
+  <text x="64" y="320" fill="#6e6b62" font-family="Inter, sans-serif" font-size="28">images / audio / video / code / tasks</text>
+  <text x="64" y="580" fill="#807d74" font-family="Space Mono, monospace" font-size="16">regex • interval • docker • self-hosted</text>
+  <rect x="960" y="520" width="180" height="44" rx="12" fill="#1a1a1f"/>
+  <text x="1010" y="550" fill="white" font-family="Space Mono, monospace" font-size="14" font-weight="700">#image →</text>
+</svg>
