@@ -226,6 +226,10 @@ impl Autotagger {
 
                 let mut final_tags: Vec<String> = memo.tags.clone();
                 final_tags.extend(new_tags.iter().cloned());
+                // Remove inbox if we now have any real autotag (image/link/code/etc)
+                if final_tags.iter().any(|t| t != "inbox") {
+                    final_tags.retain(|t| t != "inbox");
+                }
 
                 if self.update_tags(&memo, &final_tags).await? {
                     total_tagged += 1;
