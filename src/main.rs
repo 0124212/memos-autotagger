@@ -203,13 +203,23 @@ impl Autotagger {
 
                 total_scanned += 1;
 
-                // Skip memos that already have content tags (not just inbox)
-                let has_content_tag = memo.tags.iter().any(|t| t != "inbox");
-                if has_content_tag {
+                // Only process memos that have inbox (whether alone or with other tags) — we want to remove inbox if they also have a file-type tag
+                if !memo.tags.contains(&"inbox".to_string()) {
                     continue;
                 }
 
                 let existing: HashSet<&str> = memo.tags.iter().map(|s| s.as_str()).collect();
+                // If memo already has inbox plus another tag, just clean inbox (no new detection needed)
+                if memo.tags.contains(&"inbox".to_string()) && memo.tags.iter().any(|t| t != "inbox") {
+                    let mut cleaned: Vec<String> = memo.tags.clone();
+                    cleaned.retain(|t| t != "inbox");
+                    if self.update_tags(&memo, &cleaned).await? {
+                        total_tagged += 1;
+                        info!("cleaned inbox from memo {} -> [{}]", memo.name, cleaned.join(", "));
+                    }
+                    continue;
+                }
+
                 let mut detected = self.detect_tags(&memo.content);
                 // Also check for image file attached (photo uploads) — anything with image/* should be #image
                 if !detected.contains(&"image".to_string()) {
