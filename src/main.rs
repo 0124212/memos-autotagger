@@ -10,8 +10,6 @@ use tracing::{info, warn};
 struct Memo {
     name: String,
     content: String,
-    #[serde(default)]
-    tags: Vec<String>,
     #[serde(rename = "createTime", default)]
     #[allow(dead_code)]
     create_time: String,
@@ -29,7 +27,7 @@ struct ListMemosResponse {
 
 #[derive(Debug, Serialize)]
 struct MemoPatch {
-    tags: Vec<String>,
+    content: String,
 }
 
 struct Autotagger {
@@ -52,13 +50,13 @@ struct Autotagger {
 impl Autotagger {
     fn new(base_url: String, api_token: String, default_tag: String, interval_secs: u64) -> Self {
         let re_link = Regex::new(r"https?://[^\s\)\]]+").unwrap();
-        let re_image = Regex::new(r"(?i)\.(png|jpe?g|gif|bmp|svg|webp|tiff?|ico|heic|heif|avif)(\s|$|\)|\])").unwrap();
-        let re_audio = Regex::new(r"(?i)\.(mp3|wav|ogg|m4a|flac|aac|wma|opus)(\s|$|\)|\])").unwrap();
-        let re_video = Regex::new(r"(?i)\.(mp4|mkv|webm|avi|mov|flv|m4v|3gp|ogv)(\s|$|\)|\])").unwrap();
+        let re_image = Regex::new(r"(?i)(<img\s|!\[.*?\]\(.*?\)|\.(png|jpe?g|gif|bmp|svg|webp|tiff?|ico|heic|heif|avif)[\s\)\]\?])").unwrap();
+        let re_audio = Regex::new(r"(?i)\.(mp3|wav|ogg|m4a|flac|aac|wma|opus)[\s\)\]\?]").unwrap();
+        let re_video = Regex::new(r"(?i)\.(mp4|mkv|webm|avi|mov|flv|m4v|3gp|ogv)[\s\)\]\?]").unwrap();
         let re_code = Regex::new(r"```(rust|python|js|ts|go|bash|sh|sql|yaml|json|toml)").unwrap();
         let re_task = Regex::new(r"^- \[[ x]\]").unwrap();
         let re_quote = Regex::new(r"^>").unwrap();
-        let re_file_ext = Regex::new(r"(?i)\.([a-z0-9]{2,10})(?:\s|$|\)|\])").unwrap();
+        let re_file_ext = Regex::new(r"(?i)\.([a-z0-9]{2,10})(?:\s|$|\)|\]|\?)").unwrap();
 
         let known_tlds: HashSet<&str> = [
             "com", "org", "net", "io", "dev", "co", "me", "app", "sh", "to",
@@ -135,6 +133,13 @@ impl Autotagger {
         tags
     }
 
+    fn existing_hashtags(content: &str) -> HashSet<String> {
+        let re = Regex::new(r"(?m)#([a-zA-Z0-9_-]+)").unwrap();
+        re.captures_iter(content)
+            .map(|c| c[1].to_lowercase())
+            .collect()
+    }
+
     async fn run(&self) -> Result<()> {
         info!(
             "autotagger starting: default_tag={}, interval={}s",
@@ -155,7 +160,6 @@ impl Autotagger {
         let mut total_tagged = 0;
         let mut total_scanned = 0;
 
-        // Only fetch memos from the last hour to reduce API load
         loop {
             let mut url = format!(
                 "{}/api/v1/memos?pageSize=50",
@@ -188,17 +192,7 @@ impl Autotagger {
 
                 total_scanned += 1;
 
-                // Fix known tag typos (e.g. "links" -> "link")
-                let fixed_tags: Vec<String> = memo.tags.iter().map(|t| {
-                    match t.as_str() {
-                        "links" => "link".to_string(),
-                        "images" => "image".to_string(),
-                        "audios" => "audio".to_string(),
-                        "videos" => "video".to_string(),
-                        other => other.to_string(),
-                    }
-                }).collect();
-                let existing: HashSet<&str> = fixed_tags.iter().map(|s| s.as_str()).collect();
+                let existing = Self::existing_hashtags(&memo.content);
                 let detected = self.detect_tags(&memo.content);
 
                 let new_tags: Vec<String> = detected
@@ -207,19 +201,21 @@ impl Autotagger {
                     .cloned()
                     .collect();
 
-                let needs_typo_fix = fixed_tags != memo.tags;
-                if new_tags.is_empty() && !needs_typo_fix {
+                if new_tags.is_empty() {
                     continue;
                 }
 
-                let mut final_tags: Vec<String> = fixed_tags;
-                final_tags.extend(new_tags.iter().cloned());
+                // Append new hashtags to content
+                let mut new_content = memo.content.clone();
+                let hashtag_line = new_tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" ");
+                if new_content.ends_with('\n') {
+                    new_content.push_str(&hashtag_line);
+                } else {
+                    new_content.push('\n');
+                    new_content.push_str(&hashtag_line);
+                }
 
-                // Deduplicate while preserving order
-                let mut seen = HashSet::new();
-                final_tags.retain(|t| seen.insert(t.clone()));
-
-                if self.update_tags(&memo, &final_tags).await? {
+                if self.update_content(&memo, &new_content).await? {
                     total_tagged += 1;
                     info!(
                         "tagged memo {} with [{}]",
@@ -241,11 +237,11 @@ impl Autotagger {
         Ok(())
     }
 
-    async fn update_tags(&self, memo: &Memo, tags: &[String]) -> Result<bool> {
-        let url = format!("{}/api/v1/{}?updateMask=tags", self.base_url, memo.name);
+    async fn update_content(&self, memo: &Memo, content: &str) -> Result<bool> {
+        let url = format!("{}/api/v1/{}?updateMask=content", self.base_url, memo.name);
 
         let payload = MemoPatch {
-            tags: tags.to_vec(),
+            content: content.to_string(),
         };
 
         let resp = self.client
