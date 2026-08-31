@@ -7,6 +7,16 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 #[derive(Debug, Deserialize)]
+struct Attachment {
+    #[serde(default)]
+    filename: String,
+    #[serde(rename = "type", default)]
+    mime_type: String,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct Memo {
     name: String,
     content: String,
@@ -18,6 +28,8 @@ struct Memo {
     #[serde(rename = "updateTime", default)]
     #[allow(dead_code)]
     update_time: String,
+    #[serde(default)]
+    attachments: Vec<Attachment>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +57,7 @@ struct Autotagger {
     default_tag: String,
     interval: Duration,
     re_image: Regex,
+    re_photo: Regex,
     re_audio: Regex,
     re_video: Regex,
     re_code: Regex,
@@ -56,6 +69,7 @@ struct Autotagger {
 impl Autotagger {
     fn new(base_url: String, api_token: String, default_tag: String, interval_secs: u64) -> Self {
         let re_image = Regex::new(r"!\[[^\]]*\]\([^)]+\)").unwrap();
+        let re_photo = Regex::new(r"(?i)photo").unwrap();
         let re_audio = Regex::new(r"(?i)\.(mp3|wav|ogg|m4a|flac|aac|wma|opus)(\s|$|\))").unwrap();
         let re_video = Regex::new(r"(?i)\.(mp4|mkv|webm|avi|mov|flv|m4v|3gp|ogv)(\s|$|\))").unwrap();
         let re_code = Regex::new(r"```(rust|python|js|ts|go|bash|sh|sql|yaml|json|toml)").unwrap();
@@ -70,6 +84,7 @@ impl Autotagger {
             default_tag,
             interval: Duration::from_secs(interval_secs),
             re_image,
+            re_photo,
             re_audio,
             re_video,
             re_code,
@@ -79,10 +94,30 @@ impl Autotagger {
         }
     }
 
+    fn has_image_attachment(&self, memo: &Memo) -> bool {
+        // Check attachments already present in ListMemos (if any)
+        for att in &memo.attachments {
+            let mime = att.mime_type.to_lowercase();
+            let fname = att.filename.to_lowercase();
+            if mime.starts_with("image/") || fname.ends_with(".jpg") || fname.ends_with(".jpeg") || fname.ends_with(".png") || fname.ends_with(".gif") || fname.ends_with(".webp") || fname.ends_with(".heic") || fname.ends_with(".bmp") {
+                return true;
+            }
+        }
+        false
+    }
+
+    async fn fetch_has_image_attachment(&self, memo_name: &str) -> Result<bool> {
+        let url = format!("{}/api/v1/{}/attachments", self.base_url, memo_name);
+        let resp = self.client.get(&url).bearer_auth(&self.api_token).send().await?;
+        if !resp.status().is_success() { return Ok(false); }
+        let text = resp.text().await?.to_lowercase();
+        Ok(text.contains("image/") || text.contains(".jpg") || text.contains(".jpeg") || text.contains(".png") || text.contains(".gif") || text.contains(".webp") || text.contains(".heic") || text.contains(".bmp"))
+    }
+
     fn detect_tags(&self, content: &str) -> Vec<String> {
         let mut tags = Vec::new();
 
-        if self.re_image.is_match(content) {
+        if self.re_image.is_match(content) || self.re_photo.is_match(content) {
             tags.push("image".to_string());
         }
         if self.re_audio.is_match(content) {
@@ -171,7 +206,13 @@ impl Autotagger {
                 }
 
                 let existing: HashSet<&str> = memo.tags.iter().map(|s| s.as_str()).collect();
-                let detected = self.detect_tags(&memo.content);
+                let mut detected = self.detect_tags(&memo.content);
+                // Also check for image file attached (photo uploads) — anything with image/* should be #image
+                if !detected.contains(&"image".to_string()) {
+                    if self.has_image_attachment(&memo) || self.fetch_has_image_attachment(&memo.name).await.unwrap_or(false) {
+                        detected.push("image".to_string());
+                    }
+                }
 
                 let new_tags: Vec<String> = detected
                     .iter()
