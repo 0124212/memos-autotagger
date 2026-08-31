@@ -36,6 +36,7 @@ struct Autotagger {
     api_token: String,
     default_tag: String,
     interval: Duration,
+    re_ansi: Regex,
     re_link: Regex,
     re_image: Regex,
     re_audio: Regex,
@@ -44,12 +45,15 @@ struct Autotagger {
     re_task: Regex,
     re_quote: Regex,
     re_file_ext: Regex,
-    known_tlds: HashSet<&'static str>,
+    re_inbox: Regex,
+    re_hashtag: Regex,
+    re_multi_nl: Regex,
     known_exts: HashSet<&'static str>,
 }
 
 impl Autotagger {
     fn new(base_url: String, api_token: String, default_tag: String, interval_secs: u64) -> Self {
+        let re_ansi = Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap();
         let re_link = Regex::new(r"https?://[^\s\)\]]+").unwrap();
         let re_image = Regex::new(r"(?i)(<img\s|!\[.*?\]\(.*?\)|\.(png|jpe?g|gif|bmp|svg|webp|tiff?|ico|heic|heif|avif)[\s\)\]\?])").unwrap();
         let re_audio = Regex::new(r"(?i)\.(mp3|wav|ogg|m4a|flac|aac|wma|opus)[\s\)\]\?]").unwrap();
@@ -58,15 +62,10 @@ impl Autotagger {
         let re_task = Regex::new(r"^- \[[ x]\]").unwrap();
         let re_quote = Regex::new(r"^>").unwrap();
         let re_file_ext = Regex::new(r"(?i)\.([a-z]{2,10})(?:\s|$|\)|\]|\?)").unwrap();
+        let re_inbox = Regex::new(r"(?m)\s*#inbox").unwrap();
+        let re_hashtag = Regex::new(r"(?m)(\s*)#([a-zA-Z0-9_-]+)").unwrap();
+        let re_multi_nl = Regex::new(r"\n{3,}").unwrap();
 
-        let known_tlds: HashSet<&str> = [
-            "com", "org", "net", "io", "dev", "co", "me", "app", "sh", "to",
-            "in", "ai", "cc", "tv", "us", "uk", "de", "fr", "jp", "ru", "cn",
-            "info", "biz", "xyz", "gg", "fm", "vc", "so", "is", "it", "at",
-            "im", "ie", "ly", "gs", "gl", "ge", "ac", "st", "nu", "la",
-        ].into_iter().collect();
-
-        // Whitelist of file extensions worth tagging
         let known_exts: HashSet<&str> = [
             "txt", "md", "pdf", "docx", "pptx", "xlsx", "csv", "json", "yaml", "yml",
             "toml", "xml", "html", "css", "js", "ts", "jsx", "tsx", "rs", "go",
@@ -85,11 +84,12 @@ impl Autotagger {
         ].into_iter().collect();
 
         Self {
-            client: Client::new(),
+            client: Client::builder().timeout(Duration::from_secs(30)).build().unwrap(),
             base_url,
             api_token,
             default_tag,
             interval: Duration::from_secs(interval_secs),
+            re_ansi,
             re_link,
             re_image,
             re_audio,
@@ -98,7 +98,9 @@ impl Autotagger {
             re_task,
             re_quote,
             re_file_ext,
-            known_tlds,
+            re_inbox,
+            re_hashtag,
+            re_multi_nl,
             known_exts,
         }
     }
@@ -107,8 +109,7 @@ impl Autotagger {
         let mut tags = Vec::new();
 
         // Strip ANSI escape sequences before matching
-        let re_ansi = Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap();
-        let clean = re_ansi.replace_all(content, "");
+        let clean = self.re_ansi.replace_all(content, "");
 
         if self.re_link.is_match(&clean) {
             tags.push("link".to_string());
@@ -219,27 +220,55 @@ impl Autotagger {
                     .cloned()
                     .collect();
 
-                if new_tags.is_empty() {
+                // If we have non-inbox tags to add, remove #inbox if present
+                let has_non_inbox = new_tags.iter().any(|t| t != "inbox");
+                let has_inbox_existing = existing.contains("inbox");
+
+                let mut new_content = memo.content.clone();
+                let mut changed = false;
+
+                // Remove #inbox from content if we're adding real tags
+                if has_non_inbox && has_inbox_existing {
+                    new_content = self.re_inbox.replace_all(&new_content, "").to_string();
+                    changed = true;
+                }
+
+                // Filter out inbox from new_tags if we already have other tags
+                let final_new_tags: Vec<String> = if has_non_inbox {
+                    new_tags.into_iter().filter(|t| t != "inbox").collect()
+                } else {
+                    new_tags
+                };
+
+                if final_new_tags.is_empty() && !changed {
                     continue;
                 }
 
                 // Append new hashtags to content
-                let mut new_content = memo.content.clone();
-                let hashtag_line = new_tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" ");
-                if new_content.ends_with('\n') {
-                    new_content.push_str(&hashtag_line);
-                } else {
-                    new_content.push('\n');
-                    new_content.push_str(&hashtag_line);
+                if !final_new_tags.is_empty() {
+                    let hashtag_line = final_new_tags.iter().map(|t| format!("#{}", t)).collect::<Vec<_>>().join(" ");
+                    if new_content.ends_with('\n') {
+                        new_content.push_str(&hashtag_line);
+                    } else {
+                        new_content.push('\n');
+                        new_content.push_str(&hashtag_line);
+                    }
                 }
+
+                // Clean up multiple blank lines
+                new_content = self.re_multi_nl.replace_all(&new_content, "\n\n").to_string();
 
                 if self.update_content(&memo, &new_content).await? {
                     total_tagged += 1;
-                    info!(
-                        "tagged memo {} with [{}]",
-                        memo.name,
-                        new_tags.join(", ")
-                    );
+                    if !final_new_tags.is_empty() {
+                        info!(
+                            "tagged memo {} with [{}]",
+                            memo.name,
+                            final_new_tags.join(", ")
+                        );
+                    } else {
+                        info!("cleaned inbox from memo {}", memo.name);
+                    }
                 }
             }
 
@@ -332,13 +361,12 @@ impl Autotagger {
                 }
 
                 // Find all hashtags in content and remove junk ones
-                let hashtag_re = Regex::new(r"(?m)(\s*)#([a-zA-Z0-9_-]+)").unwrap();
                 let mut new_content = memo.content.clone();
                 let mut changed = false;
 
                 // Collect junk hashtags to remove (iterate in reverse to maintain positions)
                 let mut removals: Vec<(usize, usize)> = Vec::new();
-                for cap in hashtag_re.captures_iter(&memo.content) {
+                for cap in self.re_hashtag.captures_iter(&memo.content) {
                     let tag = &cap[2];
                     if Self::is_junk_hashtag(tag) {
                         removals.push((cap.get(0).unwrap().start(), cap.get(0).unwrap().end()));
@@ -353,8 +381,7 @@ impl Autotagger {
 
                 // Clean up multiple blank lines that might result from removal
                 if changed {
-                    let multi_nl = Regex::new(r"\n{3,}").unwrap();
-                    new_content = multi_nl.replace_all(&new_content, "\n\n").to_string();
+                    new_content = self.re_multi_nl.replace_all(&new_content, "\n\n").to_string();
 
                     if self.update_content(&memo, &new_content).await? {
                         total_cleaned += 1;
