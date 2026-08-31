@@ -166,10 +166,10 @@ impl Autotagger {
         let mut total_tagged = 0;
         let mut total_scanned = 0;
 
-        // Only fetch memos from the last hour to reduce API load
+        // Fetch all inbox-only memos (including old) to backfill file-type tags
         loop {
             let mut url = format!(
-                "{}/api/v1/memos?pageSize=50&filter=created_ts>now-duration(\"1h\")",
+                "{}/api/v1/memos?pageSize=50",
                 self.base_url
             );
             if let Some(token) = &page_token {
@@ -193,8 +193,12 @@ impl Autotagger {
             };
 
             for memo in resp.memos {
-                if memo.content.trim().is_empty() {
-                    continue;
+                // Don't skip empty content if it has an image attachment — that should be #image
+                if memo.content.trim().is_empty() && !self.has_image_attachment(&memo) {
+                    // still need to check via API for attachments that ListMemos didn't include
+                    if !self.fetch_has_image_attachment(&memo.name).await.unwrap_or(false) {
+                        continue;
+                    }
                 }
 
                 total_scanned += 1;
