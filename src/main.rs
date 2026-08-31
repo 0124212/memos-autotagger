@@ -168,6 +168,9 @@ impl Autotagger {
                 let fixed_tags: Vec<String> = memo.tags.iter().map(|t| {
                     match t.as_str() {
                         "links" => "link".to_string(),
+                        "images" => "image".to_string(),
+                        "audios" => "audio".to_string(),
+                        "videos" => "video".to_string(),
                         other => other.to_string(),
                     }
                 }).collect();
@@ -195,9 +198,9 @@ impl Autotagger {
                 let mut final_tags: Vec<String> = fixed_tags;
                 final_tags.extend(new_tags.iter().cloned());
 
-                // Deduplicate
-                final_tags.sort();
-                final_tags.dedup();
+                // Deduplicate while preserving order
+                let mut seen = HashSet::new();
+                final_tags.retain(|t| seen.insert(t.clone()));
 
                 if self.update_tags(&memo, &final_tags).await? {
                     total_tagged += 1;
