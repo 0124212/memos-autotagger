@@ -28,12 +28,6 @@ struct ListMemosResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct UpdateMemoRequest {
-    memo: MemoPatch,
-    update_mask: String,
-}
-
-#[derive(Debug, Serialize)]
 struct MemoPatch {
     tags: Vec<String>,
 }
@@ -51,6 +45,8 @@ struct Autotagger {
     re_code: Regex,
     re_task: Regex,
     re_quote: Regex,
+    re_file_ext: Regex,
+    known_tlds: HashSet<&'static str>,
 }
 
 impl Autotagger {
@@ -62,6 +58,14 @@ impl Autotagger {
         let re_code = Regex::new(r"```(rust|python|js|ts|go|bash|sh|sql|yaml|json|toml)").unwrap();
         let re_task = Regex::new(r"^- \[[ x]\]").unwrap();
         let re_quote = Regex::new(r"^>").unwrap();
+        let re_file_ext = Regex::new(r"(?i)\.([a-z0-9]{2,10})(?:\s|$|\)|\])").unwrap();
+
+        let known_tlds: HashSet<&str> = [
+            "com", "org", "net", "io", "dev", "co", "me", "app", "sh", "to",
+            "in", "ai", "cc", "tv", "us", "uk", "de", "fr", "jp", "ru", "cn",
+            "info", "biz", "xyz", "gg", "fm", "vc", "so", "is", "it", "at",
+            "im", "ie", "ly", "gs", "gl", "ge", "ac", "st", "nu", "la",
+        ].into_iter().collect();
 
         Self {
             client: Client::new(),
@@ -76,32 +80,52 @@ impl Autotagger {
             re_code,
             re_task,
             re_quote,
+            re_file_ext,
+            known_tlds,
         }
     }
 
     fn detect_tags(&self, content: &str) -> Vec<String> {
         let mut tags = Vec::new();
 
-        if self.re_link.is_match(content) {
+        // Strip ANSI escape sequences before matching
+        let re_ansi = Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap();
+        let clean = re_ansi.replace_all(content, "");
+
+        if self.re_link.is_match(&clean) {
             tags.push("link".to_string());
         }
-        if self.re_image.is_match(content) {
+        if self.re_image.is_match(&clean) {
             tags.push("image".to_string());
         }
-        if self.re_audio.is_match(content) {
+        if self.re_audio.is_match(&clean) {
             tags.push("audio".to_string());
         }
-        if self.re_video.is_match(content) {
+        if self.re_video.is_match(&clean) {
             tags.push("video".to_string());
         }
-        if self.re_code.is_match(content) {
+        if self.re_code.is_match(&clean) {
             tags.push("code".to_string());
         }
-        if self.re_task.is_match(content) {
+        if self.re_task.is_match(&clean) {
             tags.push("task".to_string());
         }
-        if self.re_quote.is_match(content) {
+        if self.re_quote.is_match(&clean) {
             tags.push("quote".to_string());
+        }
+
+        // Extract specific file extensions as tags
+        for cap in self.re_file_ext.captures_iter(&clean) {
+            if let Some(ext) = cap.get(1) {
+                let tag = ext.as_str().to_lowercase();
+                if !tags.contains(&tag)
+                    && !self.known_tlds.contains(tag.as_str())
+                    && !tag.chars().all(|c| c.is_ascii_digit())
+                    && tag.len() >= 2
+                {
+                    tags.push(tag);
+                }
+            }
         }
 
         if tags.is_empty() {
@@ -113,7 +137,7 @@ impl Autotagger {
 
     async fn run(&self) -> Result<()> {
         info!(
-            "autotagger starting: default_tag='{}', interval={}s",
+            "autotagger starting: default_tag={}, interval={}s",
             self.default_tag,
             self.interval.as_secs()
         );
@@ -127,27 +151,27 @@ impl Autotagger {
     }
 
     async fn process_once(&self) -> Result<()> {
-        let mut page_token = None;
+        let mut page_token: Option<String> = None;
         let mut total_tagged = 0;
         let mut total_scanned = 0;
 
         // Only fetch memos from the last hour to reduce API load
         loop {
             let mut url = format!(
-                "{}/api/v1/memos?pageSize=50&filter=created_ts>now-duration(\"1h\")",
+                "{}/api/v1/memos?pageSize=50",
                 self.base_url
             );
             if let Some(token) = &page_token {
-                url.push_str(&format!("&page_token={}", token));
+                let encoded = token.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D");
+                url.push_str(&format!("&pageToken={}", encoded));
             }
 
-            let resp_text = self.client
+            let resp = self.client
                 .get(&url)
                 .bearer_auth(&self.api_token)
                 .send()
-                .await?
-                .text()
                 .await?;
+            let resp_text = resp.text().await?;
 
             let resp: ListMemosResponse = match serde_json::from_str(&resp_text) {
                 Ok(r) => r,
@@ -174,14 +198,6 @@ impl Autotagger {
                         other => other.to_string(),
                     }
                 }).collect();
-                let needs_typo_fix = fixed_tags != memo.tags;
-
-                // Skip memos that already have content tags (not just inbox)
-                let has_content_tag = fixed_tags.iter().any(|t| t != "inbox");
-                if has_content_tag && !needs_typo_fix {
-                    continue;
-                }
-
                 let existing: HashSet<&str> = fixed_tags.iter().map(|s| s.as_str()).collect();
                 let detected = self.detect_tags(&memo.content);
 
@@ -191,6 +207,7 @@ impl Autotagger {
                     .cloned()
                     .collect();
 
+                let needs_typo_fix = fixed_tags != memo.tags;
                 if new_tags.is_empty() && !needs_typo_fix {
                     continue;
                 }
@@ -212,7 +229,7 @@ impl Autotagger {
                 }
             }
 
-            page_token = resp.next_page_token;
+            page_token = resp.next_page_token.filter(|t| !t.is_empty());
             if page_token.is_none() {
                 break;
             }
@@ -225,13 +242,10 @@ impl Autotagger {
     }
 
     async fn update_tags(&self, memo: &Memo, tags: &[String]) -> Result<bool> {
-        let url = format!("{}/api/v1/{}?update_mask=tags", self.base_url, memo.name);
+        let url = format!("{}/api/v1/{}?updateMask=tags", self.base_url, memo.name);
 
-        let payload = UpdateMemoRequest {
-            memo: MemoPatch {
-                tags: tags.to_vec(),
-            },
-            update_mask: "tags".to_string(),
+        let payload = MemoPatch {
+            tags: tags.to_vec(),
         };
 
         let resp = self.client
@@ -241,7 +255,13 @@ impl Autotagger {
             .send()
             .await?;
 
-        Ok(resp.status().is_success())
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            warn!("update failed for {}: {} - {}", memo.name, status, &body[..body.len().min(200)]);
+            return Ok(false);
+        }
+        Ok(true)
     }
 }
 
