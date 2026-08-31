@@ -44,24 +44,24 @@ struct Autotagger {
     api_token: String,
     default_tag: String,
     interval: Duration,
+    re_link: Regex,
     re_image: Regex,
     re_audio: Regex,
     re_video: Regex,
     re_code: Regex,
     re_task: Regex,
     re_quote: Regex,
-    re_bookmark: Regex,
 }
 
 impl Autotagger {
     fn new(base_url: String, api_token: String, default_tag: String, interval_secs: u64) -> Self {
-        let re_image = Regex::new(r"!\[[^\]]*\]\([^)]+\)").unwrap();
-        let re_audio = Regex::new(r"(?i)\.(mp3|wav|ogg|m4a|flac|aac|wma|opus)(\s|$|\))").unwrap();
-        let re_video = Regex::new(r"(?i)\.(mp4|mkv|webm|avi|mov|flv|m4v|3gp|ogv)(\s|$|\))").unwrap();
+        let re_link = Regex::new(r"https?://[^\s\)\]]+").unwrap();
+        let re_image = Regex::new(r"(?i)\.(png|jpe?g|gif|bmp|svg|webp|tiff?|ico|heic|heif|avif)(\s|$|\)|\])").unwrap();
+        let re_audio = Regex::new(r"(?i)\.(mp3|wav|ogg|m4a|flac|aac|wma|opus)(\s|$|\)|\])").unwrap();
+        let re_video = Regex::new(r"(?i)\.(mp4|mkv|webm|avi|mov|flv|m4v|3gp|ogv)(\s|$|\)|\])").unwrap();
         let re_code = Regex::new(r"```(rust|python|js|ts|go|bash|sh|sql|yaml|json|toml)").unwrap();
         let re_task = Regex::new(r"^- \[[ x]\]").unwrap();
         let re_quote = Regex::new(r"^>").unwrap();
-        let re_bookmark = Regex::new(r"^\[.*\]\(https?://\)").unwrap();
 
         Self {
             client: Client::new(),
@@ -69,19 +69,22 @@ impl Autotagger {
             api_token,
             default_tag,
             interval: Duration::from_secs(interval_secs),
+            re_link,
             re_image,
             re_audio,
             re_video,
             re_code,
             re_task,
             re_quote,
-            re_bookmark,
         }
     }
 
     fn detect_tags(&self, content: &str) -> Vec<String> {
         let mut tags = Vec::new();
 
+        if self.re_link.is_match(content) {
+            tags.push("link".to_string());
+        }
         if self.re_image.is_match(content) {
             tags.push("image".to_string());
         }
@@ -99,9 +102,6 @@ impl Autotagger {
         }
         if self.re_quote.is_match(content) {
             tags.push("quote".to_string());
-        }
-        if self.re_bookmark.is_match(content) {
-            tags.push("bookmark".to_string());
         }
 
         if tags.is_empty() {
@@ -164,13 +164,22 @@ impl Autotagger {
 
                 total_scanned += 1;
 
+                // Fix known tag typos (e.g. "links" -> "link")
+                let fixed_tags: Vec<String> = memo.tags.iter().map(|t| {
+                    match t.as_str() {
+                        "links" => "link".to_string(),
+                        other => other.to_string(),
+                    }
+                }).collect();
+                let needs_typo_fix = fixed_tags != memo.tags;
+
                 // Skip memos that already have content tags (not just inbox)
-                let has_content_tag = memo.tags.iter().any(|t| t != "inbox");
-                if has_content_tag {
+                let has_content_tag = fixed_tags.iter().any(|t| t != "inbox");
+                if has_content_tag && !needs_typo_fix {
                     continue;
                 }
 
-                let existing: HashSet<&str> = memo.tags.iter().map(|s| s.as_str()).collect();
+                let existing: HashSet<&str> = fixed_tags.iter().map(|s| s.as_str()).collect();
                 let detected = self.detect_tags(&memo.content);
 
                 let new_tags: Vec<String> = detected
@@ -179,12 +188,16 @@ impl Autotagger {
                     .cloned()
                     .collect();
 
-                if new_tags.is_empty() {
+                if new_tags.is_empty() && !needs_typo_fix {
                     continue;
                 }
 
-                let mut final_tags: Vec<String> = memo.tags.clone();
+                let mut final_tags: Vec<String> = fixed_tags;
                 final_tags.extend(new_tags.iter().cloned());
+
+                // Deduplicate
+                final_tags.sort();
+                final_tags.dedup();
 
                 if self.update_tags(&memo, &final_tags).await? {
                     total_tagged += 1;
