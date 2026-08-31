@@ -162,7 +162,7 @@ impl Autotagger {
     }
 
     async fn process_once(&self) -> Result<()> {
-        let mut page_token = None;
+        let mut page_token: Option<String> = None;
         let mut total_tagged = 0;
         let mut total_scanned = 0;
 
@@ -173,7 +173,7 @@ impl Autotagger {
                 self.base_url
             );
             if let Some(token) = &page_token {
-                url.push_str(&format!("&page_token={}", token));
+                url.push_str(&format!("&page_token={}", urlencoding::encode(token)));
             }
 
             let resp_text = self.client
