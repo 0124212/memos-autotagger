@@ -45,6 +45,7 @@ struct Autotagger {
     re_quote: Regex,
     re_file_ext: Regex,
     known_tlds: HashSet<&'static str>,
+    known_exts: HashSet<&'static str>,
 }
 
 impl Autotagger {
@@ -56,13 +57,31 @@ impl Autotagger {
         let re_code = Regex::new(r"```(rust|python|js|ts|go|bash|sh|sql|yaml|json|toml)").unwrap();
         let re_task = Regex::new(r"^- \[[ x]\]").unwrap();
         let re_quote = Regex::new(r"^>").unwrap();
-        let re_file_ext = Regex::new(r"(?i)\.([a-z0-9]{2,10})(?:\s|$|\)|\]|\?)").unwrap();
+        let re_file_ext = Regex::new(r"(?i)\.([a-z]{2,10})(?:\s|$|\)|\]|\?)").unwrap();
 
         let known_tlds: HashSet<&str> = [
             "com", "org", "net", "io", "dev", "co", "me", "app", "sh", "to",
             "in", "ai", "cc", "tv", "us", "uk", "de", "fr", "jp", "ru", "cn",
             "info", "biz", "xyz", "gg", "fm", "vc", "so", "is", "it", "at",
             "im", "ie", "ly", "gs", "gl", "ge", "ac", "st", "nu", "la",
+        ].into_iter().collect();
+
+        // Whitelist of file extensions worth tagging
+        let known_exts: HashSet<&str> = [
+            "txt", "md", "pdf", "docx", "pptx", "xlsx", "csv", "json", "yaml", "yml",
+            "toml", "xml", "html", "css", "js", "ts", "jsx", "tsx", "rs", "go",
+            "py", "rb", "java", "c", "cpp", "h", "sh", "bash", "zsh", "sql",
+            "r", "lua", "zig", "nim", "ex", "exs", "erl", "hs", "ml", "swift",
+            "kt", "scala", "cs", "fs", "vb", "php", "pl", "pm", "raku",
+            "dockerfile", "makefile", "cmake", "gradle", "sbt", "cabal",
+            "gitignore", "env", "lock", "log", "ini", "cfg", "conf",
+            "tar", "gz", "zip", "bz2", "xz", "tgz", "7z", "rar",
+            "jpg", "jpeg", "png", "gif", "bmp", "svg", "webp", "tiff", "ico", "heic", "avif",
+            "mp3", "wav", "ogg", "m4a", "flac", "aac", "opus",
+            "mp4", "mkv", "webm", "avi", "mov", "flv",
+            "exe", "dmg", "rpm", "deb", "apk", "msi",
+            "pem", "key", "crt", "cert",
+            "patch", "diff",
         ].into_iter().collect();
 
         Self {
@@ -80,6 +99,7 @@ impl Autotagger {
             re_quote,
             re_file_ext,
             known_tlds,
+            known_exts,
         }
     }
 
@@ -112,14 +132,12 @@ impl Autotagger {
             tags.push("quote".to_string());
         }
 
-        // Extract specific file extensions as tags
+        // Extract specific file extensions as tags (whitelist only)
         for cap in self.re_file_ext.captures_iter(&clean) {
             if let Some(ext) = cap.get(1) {
                 let tag = ext.as_str().to_lowercase();
                 if !tags.contains(&tag)
-                    && !self.known_tlds.contains(tag.as_str())
-                    && !tag.chars().all(|c| c.is_ascii_digit())
-                    && tag.len() >= 2
+                    && self.known_exts.contains(tag.as_str())
                 {
                     tags.push(tag);
                 }
@@ -259,6 +277,101 @@ impl Autotagger {
         }
         Ok(true)
     }
+
+    fn is_junk_hashtag(tag: &str) -> bool {
+        let t = tag.to_lowercase();
+        // Single letter + digit: f0, b0, f1, b1, etc.
+        if t.len() == 2 && t.chars().next().unwrap().is_ascii_alphabetic() && t.chars().nth(1).unwrap().is_ascii_digit() {
+            return true;
+        }
+        // Two letters + digit: bold, etc. — keep those, they're real words
+        // Version strings: 28475v1, 03386v1, etc.
+        if Regex::new(r"^\d+v\d+$").unwrap().is_match(&t) {
+            return true;
+        }
+        // Short alphanumeric junk: 55t, 0rc1, etc. (starts with digit)
+        if t.len() <= 4 && t.chars().next().unwrap().is_ascii_digit() {
+            return true;
+        }
+        false
+    }
+
+    async fn clean_junk_hashtags(&self) -> Result<()> {
+        info!("clean mode: removing junk hashtags from all memos");
+        let mut page_token: Option<String> = None;
+        let mut total_cleaned = 0;
+
+        loop {
+            let mut url = format!(
+                "{}/api/v1/memos?pageSize=50",
+                self.base_url
+            );
+            if let Some(token) = &page_token {
+                let encoded = token.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D");
+                url.push_str(&format!("&pageToken={}", encoded));
+            }
+
+            let resp = self.client
+                .get(&url)
+                .bearer_auth(&self.api_token)
+                .send()
+                .await?;
+            let resp_text = resp.text().await?;
+
+            let resp: ListMemosResponse = match serde_json::from_str(&resp_text) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("failed to parse response ({}): {}", e, &resp_text[..resp_text.len().min(200)]);
+                    return Ok(());
+                }
+            };
+
+            for memo in resp.memos {
+                if memo.content.trim().is_empty() {
+                    continue;
+                }
+
+                // Find all hashtags in content and remove junk ones
+                let hashtag_re = Regex::new(r"(?m)(\s*)#([a-zA-Z0-9_-]+)").unwrap();
+                let mut new_content = memo.content.clone();
+                let mut changed = false;
+
+                // Collect junk hashtags to remove (iterate in reverse to maintain positions)
+                let mut removals: Vec<(usize, usize)> = Vec::new();
+                for cap in hashtag_re.captures_iter(&memo.content) {
+                    let tag = &cap[2];
+                    if Self::is_junk_hashtag(tag) {
+                        removals.push((cap.get(0).unwrap().start(), cap.get(0).unwrap().end()));
+                    }
+                }
+
+                // Remove in reverse order to preserve positions
+                for (start, end) in removals.into_iter().rev() {
+                    new_content.drain(start..end);
+                    changed = true;
+                }
+
+                // Clean up multiple blank lines that might result from removal
+                if changed {
+                    let multi_nl = Regex::new(r"\n{3,}").unwrap();
+                    new_content = multi_nl.replace_all(&new_content, "\n\n").to_string();
+
+                    if self.update_content(&memo, &new_content).await? {
+                        total_cleaned += 1;
+                        info!("cleaned memo {}", memo.name);
+                    }
+                }
+            }
+
+            page_token = resp.next_page_token.filter(|t| !t.is_empty());
+            if page_token.is_none() {
+                break;
+            }
+        }
+
+        info!("cleaned {} memos", total_cleaned);
+        Ok(())
+    }
 }
 
 #[tokio::main]
@@ -273,6 +386,13 @@ async fn main() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(60);
 
+    let clean_mode = std::env::args().any(|a| a == "--clean");
+
     let autotagger = Autotagger::new(base_url, api_token, default_tag, interval);
-    autotagger.run().await
+
+    if clean_mode {
+        autotagger.clean_junk_hashtags().await
+    } else {
+        autotagger.run().await
+    }
 }
