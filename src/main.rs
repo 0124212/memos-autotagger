@@ -237,6 +237,10 @@ impl Autotagger {
                 total_scanned += 1;
 
                 let existing = self.existing_hashtags(&memo.content);
+                // Skip memos that already have a user tag (any hashtag except inbox)
+                if existing.iter().any(|t| t != "inbox") {
+                    continue;
+                }
                 let detected = self.detect_tags(&memo);
 
                 let new_tags: Vec<String> = detected
