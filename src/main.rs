@@ -1,4 +1,6 @@
 use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -56,7 +58,15 @@ struct Autotagger {
     re_quote: Regex,
     re_file_ext: Regex,
     re_hashtag: Regex,
+    re_date: Regex,
     known_exts: HashSet<&'static str>,
+    vikunja_url: String,
+    vikunja_user: String,
+    vikunja_pass: String,
+    vikunja_project: i32,
+    radicale_url: String,
+    radicale_user: String,
+    radicale_pass: String,
 }
 
 impl Autotagger {
@@ -71,6 +81,14 @@ impl Autotagger {
         let re_quote = Regex::new(r"^>").unwrap();
         let re_file_ext = Regex::new(r"(?i)\.([a-z]{2,10})(?:\s|$|\)|\]|\?)").unwrap();
         let re_hashtag = Regex::new(r"(\s*)#([^\s#]+)").unwrap();
+        let re_date = Regex::new(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})").unwrap();
+        let vikunja_url = std::env::var("VIKUNJA_URL").unwrap_or_else(|_| "http://vikunja:3456".to_string());
+        let vikunja_user = std::env::var("VIKUNJA_USER").unwrap_or_else(|_| "asher".to_string());
+        let vikunja_pass = std::env::var("VIKUNJA_PASS").unwrap_or_else(|_| "test123".to_string());
+        let vikunja_project = std::env::var("VIKUNJA_PROJECT").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+        let radicale_url = std::env::var("RADICALE_URL").unwrap_or_else(|_| "http://radicale:5232".to_string());
+        let radicale_user = std::env::var("RADICALE_USER").unwrap_or_else(|_| "asher".to_string());
+        let radicale_pass = std::env::var("RADICALE_PASS").unwrap_or_else(|_| "test123".to_string());
 
         // Whitelist of file extensions worth tagging
         let known_exts: HashSet<&str> = [
@@ -106,7 +124,15 @@ impl Autotagger {
             re_quote,
             re_file_ext,
             re_hashtag,
+            re_date,
             known_exts,
+            vikunja_url,
+            vikunja_user,
+            vikunja_pass,
+            vikunja_project,
+            radicale_url,
+            radicale_user,
+            radicale_pass,
         }
     }
 
@@ -239,8 +265,19 @@ impl Autotagger {
                 let existing = self.existing_hashtags(&memo.content);
                 let has_other_existing = existing.iter().any(|t| t != "inbox");
                 let has_inbox_existing = existing.contains("inbox");
-                // Skip memos that already have a proper tag (other tag, no inbox to clean)
-                if has_other_existing && !has_inbox_existing {
+                // Bridge to Vikunja/Radicale before skip (so already-tagged memos still sync)
+                if existing.contains("task") && !existing.contains("task-synced") {
+                    if let Err(e) = self.create_vikunja_task(&memo).await {
+                        warn!("vikunja failed for {}: {}", memo.name, e);
+                    }
+                }
+                if existing.contains("calendar") && !existing.contains("calendar-synced") {
+                    if let Err(e) = self.create_radicale_event(&memo).await {
+                        warn!("radicale failed for {}: {}", memo.name, e);
+                    }
+                }
+                // Skip memos that already have a proper tag (other tag, no inbox to clean) — but not if it's the #tasks typo
+                if has_other_existing && !has_inbox_existing && !existing.contains("tasks") {
                     continue;
                 }
                 let detected = self.detect_tags(&memo);
@@ -267,6 +304,14 @@ impl Autotagger {
                 if needs_inbox_cleanup {
                     let before = new_content.clone();
                     new_content = new_content.replace(" #inbox", "").replace("#inbox ", "").replace("#inbox", "");
+                    if new_content != before {
+                        changed = true;
+                    }
+                }
+                // Fold #tasks → #task
+                if new_content.to_lowercase().contains("#tasks") {
+                    let before = new_content.clone();
+                    new_content = new_content.replace("#tasks", "#task").replace("#Tasks", "#task").replace("#TASKS", "#task");
                     if new_content != before {
                         changed = true;
                     }
@@ -338,6 +383,73 @@ impl Autotagger {
             return Ok(false);
         }
         Ok(true)
+    }
+
+    async fn vikunja_token(&self) -> Result<String> {
+        let resp = self.client
+            .post(format!("{}/api/v1/login", self.vikunja_url))
+            .json(&serde_json::json!({"username": self.vikunja_user, "password": self.vikunja_pass}))
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        let data: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        if let Some(t) = data["token"].as_str() {
+            return Ok(t.to_string());
+        }
+        anyhow::bail!("vikunja login failed {}: {}", status, &text[..text.len().min(300)])
+    }
+
+    async fn create_vikunja_task(&self, memo: &Memo) -> Result<()> {
+        let token = self.vikunja_token().await?;
+        let title = memo.content.lines().next().unwrap_or("Untitled").chars().take(100).collect::<String>().trim().to_string();
+        let title = if title.is_empty() { "Untitled".to_string() } else { title };
+        let payload = serde_json::json!({"title": title, "description": memo.content});
+        let resp = self.client
+            .put(format!("{}/api/v1/projects/{}/tasks", self.vikunja_url, self.vikunja_project))
+            .bearer_auth(&token)
+            .json(&payload)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("vikunja create failed: {}", resp.status());
+        }
+        // mark memo as synced
+        let new_content = format!("{}\n#task-synced", memo.content.trim_end());
+        self.update_content(memo, &new_content).await?;
+        info!("created vikunja task for {}", memo.name);
+        Ok(())
+    }
+
+    async fn create_radicale_event(&self, memo: &Memo) -> Result<()> {
+        let caps = self.re_date.captures(&memo.content).ok_or_else(|| anyhow::anyhow!("no date found"))?;
+        let date_str = format!("{} {}", &caps[1], &caps[2]);
+        let dt = NaiveDateTime::parse_from_str(&date_str, "%Y-%m-%d %H:%M")?;
+        let uid = memo.name.replace('/', "-");
+        let dt_utc: DateTime<Utc> = DateTime::from_naive_utc_and_offset(dt, Utc);
+        let ics = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//memotag//EN\r\nBEGIN:VEVENT\r\nUID:{}\r\nDTSTAMP:{}\r\nDTSTART:{}\r\nSUMMARY:{}\r\nDESCRIPTION:{}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+            uid,
+            Utc::now().format("%Y%m%dT%H%M%SZ"),
+            dt_utc.format("%Y%m%dT%H%M%SZ"),
+            memo.content.lines().next().unwrap_or("Event").replace('\n', "\\n").chars().take(100).collect::<String>(),
+            memo.content.replace('\n', "\\n").replace('\r', "")
+        );
+        let cred = BASE64.encode(format!("{}:{}", self.radicale_user, self.radicale_pass));
+        let resp = self.client
+            .put(format!("{}/asher/calendar/{}.ics", self.radicale_url.trim_end_matches('/'), uid))
+            .header("Authorization", format!("Basic {}", cred))
+            .header("Content-Type", "text/calendar; charset=utf-8")
+            .body(ics)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("radicale put failed: {}", resp.status());
+        }
+        let new_content = format!("{}\n#calendar-synced", memo.content.trim_end());
+        self.update_content(memo, &new_content).await?;
+        info!("created radicale event for {}", memo.name);
+        Ok(())
     }
 
     fn is_junk_hashtag(tag: &str) -> bool {
