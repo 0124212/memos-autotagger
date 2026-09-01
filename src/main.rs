@@ -237,8 +237,10 @@ impl Autotagger {
                 total_scanned += 1;
 
                 let existing = self.existing_hashtags(&memo.content);
-                // Skip memos that already have a user tag (any hashtag except inbox)
-                if existing.iter().any(|t| t != "inbox") {
+                let has_other_existing = existing.iter().any(|t| t != "inbox");
+                let has_inbox_existing = existing.contains("inbox");
+                // Skip memos that already have a proper tag (other tag, no inbox to clean)
+                if has_other_existing && !has_inbox_existing {
                     continue;
                 }
                 let detected = self.detect_tags(&memo);
@@ -249,8 +251,6 @@ impl Autotagger {
                     .cloned()
                     .collect();
 
-                let has_inbox_existing = existing.contains("inbox");
-                let has_other_existing = existing.iter().any(|t| t != "inbox");
                 let has_non_inbox_detected = detected.iter().any(|t| t != "inbox");
                 let has_non_inbox_new = new_tags.iter().any(|t| t != "inbox");
                 let needs_inbox_cleanup = has_inbox_existing && (has_other_existing || has_non_inbox_detected);
