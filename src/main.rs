@@ -7,9 +7,19 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 #[derive(Debug, Deserialize)]
+struct Attachment {
+    #[serde(default)]
+    filename: String,
+    #[serde(rename = "type", default)]
+    mime_type: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct Memo {
     name: String,
     content: String,
+    #[serde(default)]
+    attachments: Vec<Attachment>,
     #[serde(rename = "createTime", default)]
     #[allow(dead_code)]
     create_time: String,
@@ -36,6 +46,7 @@ struct Autotagger {
     api_token: String,
     default_tag: String,
     interval: Duration,
+    re_ansi: Regex,
     re_link: Regex,
     re_image: Regex,
     re_audio: Regex,
@@ -44,27 +55,22 @@ struct Autotagger {
     re_task: Regex,
     re_quote: Regex,
     re_file_ext: Regex,
-    known_tlds: HashSet<&'static str>,
+    re_hashtag: Regex,
     known_exts: HashSet<&'static str>,
 }
 
 impl Autotagger {
     fn new(base_url: String, api_token: String, default_tag: String, interval_secs: u64) -> Self {
+        let re_ansi = Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap();
         let re_link = Regex::new(r"https?://[^\s\)\]]+").unwrap();
-        let re_image = Regex::new(r"(?i)(<img\s|!\[.*?\]\(.*?\)|\.(png|jpe?g|gif|bmp|svg|webp|tiff?|ico|heic|heif|avif)[\s\)\]\?])").unwrap();
+        let re_image = Regex::new(r"(?i)(<img\s|!\[[^\]]*\]\([^)]*\)|\.(png|jpe?g|gif|bmp|svg|webp|tiff?|ico|heic|heif|avif)[\s\)\]\?])").unwrap();
         let re_audio = Regex::new(r"(?i)\.(mp3|wav|ogg|m4a|flac|aac|wma|opus)[\s\)\]\?]").unwrap();
         let re_video = Regex::new(r"(?i)\.(mp4|mkv|webm|avi|mov|flv|m4v|3gp|ogv)[\s\)\]\?]").unwrap();
         let re_code = Regex::new(r"```(rust|python|js|ts|go|bash|sh|sql|yaml|json|toml)").unwrap();
         let re_task = Regex::new(r"^- \[[ x]\]").unwrap();
         let re_quote = Regex::new(r"^>").unwrap();
         let re_file_ext = Regex::new(r"(?i)\.([a-z]{2,10})(?:\s|$|\)|\]|\?)").unwrap();
-
-        let known_tlds: HashSet<&str> = [
-            "com", "org", "net", "io", "dev", "co", "me", "app", "sh", "to",
-            "in", "ai", "cc", "tv", "us", "uk", "de", "fr", "jp", "ru", "cn",
-            "info", "biz", "xyz", "gg", "fm", "vc", "so", "is", "it", "at",
-            "im", "ie", "ly", "gs", "gl", "ge", "ac", "st", "nu", "la",
-        ].into_iter().collect();
+        let re_hashtag = Regex::new(r"(\s*)#([^\s#]+)").unwrap();
 
         // Whitelist of file extensions worth tagging
         let known_exts: HashSet<&str> = [
@@ -90,6 +96,7 @@ impl Autotagger {
             api_token,
             default_tag,
             interval: Duration::from_secs(interval_secs),
+            re_ansi,
             re_link,
             re_image,
             re_audio,
@@ -98,17 +105,37 @@ impl Autotagger {
             re_task,
             re_quote,
             re_file_ext,
-            known_tlds,
+            re_hashtag,
             known_exts,
         }
     }
 
-    fn detect_tags(&self, content: &str) -> Vec<String> {
+    fn detect_tags(&self, memo: &Memo) -> Vec<String> {
         let mut tags = Vec::new();
 
+        // Check attachments for image/audio/video
+        for att in &memo.attachments {
+            let mime = att.mime_type.to_lowercase();
+            let fname = att.filename.to_lowercase();
+            if mime.starts_with("image/") || fname.ends_with(".jpg") || fname.ends_with(".jpeg") || fname.ends_with(".png") || fname.ends_with(".gif") || fname.ends_with(".webp") || fname.ends_with(".heic") {
+                if !tags.contains(&"image".to_string()) {
+                    tags.push("image".to_string());
+                }
+            }
+            if mime.starts_with("audio/") || fname.ends_with(".mp3") || fname.ends_with(".wav") || fname.ends_with(".m4a") || fname.ends_with(".flac") {
+                if !tags.contains(&"audio".to_string()) {
+                    tags.push("audio".to_string());
+                }
+            }
+            if mime.starts_with("video/") || fname.ends_with(".mp4") || fname.ends_with(".mov") || fname.ends_with(".avi") {
+                if !tags.contains(&"video".to_string()) {
+                    tags.push("video".to_string());
+                }
+            }
+        }
+
         // Strip ANSI escape sequences before matching
-        let re_ansi = Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap();
-        let clean = re_ansi.replace_all(content, "");
+        let clean = self.re_ansi.replace_all(&memo.content, "");
 
         if self.re_link.is_match(&clean) {
             tags.push("link".to_string());
@@ -151,10 +178,9 @@ impl Autotagger {
         tags
     }
 
-    fn existing_hashtags(content: &str) -> HashSet<String> {
-        let re = Regex::new(r"(?m)#([a-zA-Z0-9_-]+)").unwrap();
-        re.captures_iter(content)
-            .map(|c| c[1].to_lowercase())
+    fn existing_hashtags(&self, content: &str) -> HashSet<String> {
+        self.re_hashtag.captures_iter(content)
+            .map(|c| c[2].to_lowercase())
             .collect()
     }
 
@@ -210,8 +236,8 @@ impl Autotagger {
 
                 total_scanned += 1;
 
-                let existing = Self::existing_hashtags(&memo.content);
-                let detected = self.detect_tags(&memo.content);
+                let existing = self.existing_hashtags(&memo.content);
+                let detected = self.detect_tags(&memo);
 
                 let new_tags: Vec<String> = detected
                     .iter()
@@ -364,13 +390,12 @@ impl Autotagger {
                 }
 
                 // Find all hashtags in content and remove junk ones
-                let hashtag_re = Regex::new(r"(?m)(\s*)#([a-zA-Z0-9_-]+)").unwrap();
                 let mut new_content = memo.content.clone();
                 let mut changed = false;
 
                 // Collect junk hashtags to remove (iterate in reverse to maintain positions)
                 let mut removals: Vec<(usize, usize)> = Vec::new();
-                for cap in hashtag_re.captures_iter(&memo.content) {
+                for cap in self.re_hashtag.captures_iter(&memo.content) {
                     let tag = &cap[2];
                     if Self::is_junk_hashtag(tag) {
                         removals.push((cap.get(0).unwrap().start(), cap.get(0).unwrap().end()));
