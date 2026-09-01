@@ -219,11 +219,14 @@ impl Autotagger {
                     .cloned()
                     .collect();
 
-                let has_non_inbox = new_tags.iter().any(|t| t != "inbox");
                 let has_inbox_existing = existing.contains("inbox");
+                let has_other_existing = existing.iter().any(|t| t != "inbox");
+                let has_non_inbox_detected = detected.iter().any(|t| t != "inbox");
+                let has_non_inbox_new = new_tags.iter().any(|t| t != "inbox");
+                let needs_inbox_cleanup = has_inbox_existing && (has_other_existing || has_non_inbox_detected);
 
-                // Filter out inbox if we have real tags to add
-                let final_new_tags: Vec<String> = if has_non_inbox {
+                // Filter out inbox if we need cleanup or have real tags
+                let final_new_tags: Vec<String> = if needs_inbox_cleanup || has_non_inbox_new {
                     new_tags.into_iter().filter(|t| t != "inbox").collect()
                 } else {
                     new_tags
@@ -231,7 +234,7 @@ impl Autotagger {
 
                 let mut new_content = memo.content.clone();
                 let mut changed = false;
-                if has_non_inbox && has_inbox_existing {
+                if needs_inbox_cleanup {
                     let before = new_content.clone();
                     new_content = new_content.replace(" #inbox", "").replace("#inbox ", "").replace("#inbox", "");
                     if new_content != before {
