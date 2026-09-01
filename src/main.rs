@@ -64,6 +64,7 @@ struct Autotagger {
     vikunja_user: String,
     vikunja_pass: String,
     vikunja_project: i32,
+    vikunja_token_cache: tokio::sync::OnceCell<String>,
     radicale_url: String,
     radicale_user: String,
     radicale_pass: String,
@@ -84,11 +85,11 @@ impl Autotagger {
         let re_date = Regex::new(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})").unwrap();
         let vikunja_url = std::env::var("VIKUNJA_URL").unwrap_or_else(|_| "http://vikunja:3456".to_string());
         let vikunja_user = std::env::var("VIKUNJA_USER").unwrap_or_else(|_| "asher".to_string());
-        let vikunja_pass = std::env::var("VIKUNJA_PASS").unwrap_or_else(|_| "test123".to_string());
+        let vikunja_pass = std::env::var("VIKUNJA_PASS").unwrap_or_else(|_| "asher123".to_string());
         let vikunja_project = std::env::var("VIKUNJA_PROJECT").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
         let radicale_url = std::env::var("RADICALE_URL").unwrap_or_else(|_| "http://radicale:5232".to_string());
         let radicale_user = std::env::var("RADICALE_USER").unwrap_or_else(|_| "asher".to_string());
-        let radicale_pass = std::env::var("RADICALE_PASS").unwrap_or_else(|_| "test123".to_string());
+        let radicale_pass = std::env::var("RADICALE_PASS").unwrap_or_else(|_| "asher123".to_string());
 
         // Whitelist of file extensions worth tagging
         let known_exts: HashSet<&str> = [
@@ -130,6 +131,7 @@ impl Autotagger {
             vikunja_user,
             vikunja_pass,
             vikunja_project,
+            vikunja_token_cache: tokio::sync::OnceCell::new(),
             radicale_url,
             radicale_user,
             radicale_pass,
@@ -386,6 +388,9 @@ impl Autotagger {
     }
 
     async fn vikunja_token(&self) -> Result<String> {
+        if let Some(t) = self.vikunja_token_cache.get() {
+            return Ok(t.clone());
+        }
         let resp = self.client
             .post(format!("{}/api/v1/login", self.vikunja_url))
             .json(&serde_json::json!({"username": self.vikunja_user, "password": self.vikunja_pass}))
@@ -395,6 +400,7 @@ impl Autotagger {
         let text = resp.text().await?;
         let data: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
         if let Some(t) = data["token"].as_str() {
+            let _ = self.vikunja_token_cache.set(t.to_string());
             return Ok(t.to_string());
         }
         anyhow::bail!("vikunja login failed {}: {}", status, &text[..text.len().min(300)])
@@ -437,7 +443,7 @@ impl Autotagger {
         );
         let cred = BASE64.encode(format!("{}:{}", self.radicale_user, self.radicale_pass));
         let resp = self.client
-            .put(format!("{}/asher/calendar/{}.ics", self.radicale_url.trim_end_matches('/'), uid))
+            .put(format!("{}/asher/events/{}.ics", self.radicale_url.trim_end_matches('/'), uid))
             .header("Authorization", format!("Basic {}", cred))
             .header("Content-Type", "text/calendar; charset=utf-8")
             .body(ics)
