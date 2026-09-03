@@ -46,6 +46,8 @@ struct Autotagger {
     interval: Duration,
     re_link: Regex,
     re_image: Regex,
+    re_table: Regex,
+    re_figure: Regex,
     re_audio: Regex,
     re_video: Regex,
     re_code: Regex,
@@ -57,6 +59,8 @@ impl Autotagger {
     fn new(base_url: String, api_token: String, default_tag: String, interval_secs: u64) -> Self {
         let re_link = Regex::new(r"https?://[^\s\)\]]+").unwrap();
         let re_image = Regex::new(r"(?i)\.(png|jpe?g|gif|bmp|svg|webp|tiff?|ico|heic|heif|avif)(\s|$|\)|\])").unwrap();
+        let re_table = Regex::new(r"\|.*\|").unwrap();
+        let re_figure = Regex::new(r"!\[.*\]\(.*\)|<figure|<img").unwrap();
         let re_audio = Regex::new(r"(?i)\.(mp3|wav|ogg|m4a|flac|aac|wma|opus)(\s|$|\)|\])").unwrap();
         let re_video = Regex::new(r"(?i)\.(mp4|mkv|webm|avi|mov|flv|m4v|3gp|ogv)(\s|$|\)|\])").unwrap();
         let re_code = Regex::new(r"```(rust|python|js|ts|go|bash|sh|sql|yaml|json|toml)").unwrap();
@@ -71,6 +75,8 @@ impl Autotagger {
             interval: Duration::from_secs(interval_secs),
             re_link,
             re_image,
+            re_table,
+            re_figure,
             re_audio,
             re_video,
             re_code,
@@ -87,6 +93,12 @@ impl Autotagger {
         }
         if self.re_image.is_match(content) {
             tags.push("image".to_string());
+        }
+        if self.re_table.is_match(content) && content.contains("---") {
+            tags.push("table".to_string());
+        }
+        if self.re_figure.is_match(content) {
+            tags.push("figure".to_string());
         }
         if self.re_audio.is_match(content) {
             tags.push("audio".to_string());
@@ -174,6 +186,8 @@ impl Autotagger {
                         "quotes" => "quote".to_string(),
                         "tasks" => "task".to_string(),
                         "codes" => "code".to_string(),
+                        "tables" => "table".to_string(),
+                        "figures" => "figure".to_string(),
                         other => other.to_string(),
                     }
                 }).collect();
