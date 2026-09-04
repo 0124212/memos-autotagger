@@ -264,7 +264,32 @@ impl Autotagger {
 
                 total_scanned += 1;
 
-                let existing = self.existing_hashtags(&memo.content);
+                // Fold #untagged → #inbox and #tasks → #task BEFORE skip check
+                // (these are always wrong/leftover regardless of other tags)
+                let mut new_content = memo.content.clone();
+                let mut changed = false;
+                if new_content.to_lowercase().contains("#untagged") {
+                    let before = new_content.clone();
+                    new_content = new_content.replace("#untagged", "#inbox").replace("#Untagged", "#inbox").replace("#UNTAGGED", "#inbox");
+                    if new_content != before {
+                        changed = true;
+                    }
+                }
+                if new_content.to_lowercase().contains("#tasks") {
+                    let before = new_content.clone();
+                    new_content = new_content.replace("#tasks", "#task").replace("#Tasks", "#task").replace("#TASKS", "#task");
+                    if new_content != before {
+                        changed = true;
+                    }
+                }
+                // If we changed content, persist it before continuing
+                if changed {
+                    if let Err(e) = self.update_content(&memo, &new_content).await {
+                        warn!("failed to fold tags for {}: {}", memo.name, e);
+                    }
+                }
+
+                let existing = self.existing_hashtags(&new_content);
                 let has_other_existing = existing.iter().any(|t| t != "inbox");
                 let has_inbox_existing = existing.contains("inbox");
                 // Bridge to Vikunja/Radicale before skip (so already-tagged memos still sync)
@@ -301,27 +326,9 @@ impl Autotagger {
                     new_tags
                 };
 
-                let mut new_content = memo.content.clone();
-                let mut changed = false;
                 if needs_inbox_cleanup {
                     let before = new_content.clone();
                     new_content = new_content.replace(" #inbox", "").replace("#inbox ", "").replace("#inbox", "");
-                    if new_content != before {
-                        changed = true;
-                    }
-                }
-                // Fold #tasks → #task
-                if new_content.to_lowercase().contains("#tasks") {
-                    let before = new_content.clone();
-                    new_content = new_content.replace("#tasks", "#task").replace("#Tasks", "#task").replace("#TASKS", "#task");
-                    if new_content != before {
-                        changed = true;
-                    }
-                }
-                // Fold #untagged → #inbox
-                if new_content.to_lowercase().contains("#untagged") {
-                    let before = new_content.clone();
-                    new_content = new_content.replace("#untagged", "#inbox").replace("#Untagged", "#inbox").replace("#UNTAGGED", "#inbox");
                     if new_content != before {
                         changed = true;
                     }
