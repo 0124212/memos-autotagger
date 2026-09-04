@@ -318,6 +318,14 @@ impl Autotagger {
                         changed = true;
                     }
                 }
+                // Fold #untagged → #inbox
+                if new_content.to_lowercase().contains("#untagged") {
+                    let before = new_content.clone();
+                    new_content = new_content.replace("#untagged", "#inbox").replace("#Untagged", "#inbox").replace("#UNTAGGED", "#inbox");
+                    if new_content != before {
+                        changed = true;
+                    }
+                }
 
                 if final_new_tags.is_empty() && !changed {
                     continue;
